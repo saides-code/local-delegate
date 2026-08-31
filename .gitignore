@@ -1,0 +1,19 @@
+# The skill's own runtime state, when local-delegate is used inside this repo.
+# Machine-specific: model tags and VRAM measurements do not transfer.
+.local-delegate/config.json
+.local-delegate/*.log
+.local-delegate/queue.jsonl
+.local-delegate/queue.*.done
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

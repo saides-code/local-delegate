@@ -1,0 +1,29 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "saides-code",
+  "owner": {
+    "name": "saides-code",
+    "url": "https://github.com/saides-code"
+  },
+  "description": "Plugins by saides-code for Claude Code.",
+  "version": "1.0.0",
+  "plugins": [
+    {
+      "name": "local-delegate",
+      "displayName": "Local Delegate",
+      "source": "./",
+      "description": "Hand the mechanical parts of a job to a second Claude Code running on local Ollama models, so refactors, tests, translations and first drafts cost no subscription tokens.",
+      "version": "1.0.0",
+      "author": {
+        "name": "saides-code",
+        "url": "https://github.com/saides-code"
+      },
+      "homepage": "https://github.com/saides-code/local-delegate#readme",
+      "repository": "https://github.com/saides-code/local-delegate",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": ["ollama", "local-llm", "delegation", "token-savings", "offline"],
+      "tags": ["ollama", "local-llm", "cost-saving", "refactoring"]
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# Normalise to LF in the repository. Checkouts still follow the platform,
+# so Windows users keep CRLF in their working copy.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
