@@ -77,9 +77,21 @@ because it could not run anything. This release is the response.
   overrides). The tuning variables it records are labelled as the client shell's, since
   Ollama does not report its own configuration.
 - **The fifth profile could not be built** although the setup told you to propose one.
-- **Setup cost.** A dated `references/shortlist.md` gives a fast path — detect the GPU,
-  take a known-good set, install, verify — instead of researching every candidate on
-  the expensive model. The deep path remains for unusual hardware or a stale list.
+- **The verification command ran through `cmd.exe` on Windows**, via `shell=True`. It now
+  runs in PowerShell with the native exit code forwarded, because PowerShell otherwise
+  reports the script's own status — and a verification step that always passes is worse
+  than none.
+- **A stored session id could outlive the session it named**, leaving the profile stuck
+  resuming an id that no longer resolved. A run that fails that way now drops the id and
+  retries once without it.
+- **The flush summary listed the skill's own runtime files** under `.local-delegate/` as
+  though they were the agent's new work, polluting the very diff the reviewer is told to
+  trust.
+- **A flush emitted nothing until it exited.** Python block-buffers stdout when it is not
+  a terminal, so a delegation redirected to a file or run in the background was
+  indistinguishable from a hang for its whole duration. Output is line-buffered now.
+- **CI fails on anything defined and never used**, which is the exact shape of the
+  `GUARDRAILS` defect.
 
 ### Known limitations
 

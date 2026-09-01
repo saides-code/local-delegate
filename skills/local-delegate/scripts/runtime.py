@@ -10,18 +10,30 @@ from pathlib import Path
 
 
 def fix_console():
-    """Make non-ASCII output survive a cp1252 console.
+    """Make output survive a cp1252 console, and appear while it is still useful.
 
-    On a Windows console the default codec raises UnicodeEncodeError on the first
-    box-drawing character, which killed the installer before it downloaded anything.
-    Reconfiguring with errors="replace" means a mis-encoded glyph degrades to a
-    placeholder instead of taking the process down.
+    Two problems, one call.
+
+    Encoding: on a Windows console the default codec raises UnicodeEncodeError on the
+    first box-drawing character, which killed the installer before it downloaded
+    anything. errors="replace" degrades a glyph to a placeholder instead of taking the
+    process down.
+
+    Buffering: Python block-buffers stdout whenever it is not a terminal, so a flush
+    piped to a file or run in the background emits nothing at all until it exits. A
+    delegation can run for ten minutes, and for all of them an empty log is
+    indistinguishable from a hang -- which is the one thing progress output exists to
+    rule out. Line buffering costs nothing here and makes every step visible as it
+    happens.
     """
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
         except (AttributeError, ValueError, OSError):
-            pass
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError, OSError):
+                pass
 
 
 def quiet_broken_pipe():

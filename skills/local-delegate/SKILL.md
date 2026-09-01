@@ -141,6 +141,29 @@ with precise instructions and tests covering it, delegates like any other. What 
 *deciding* how to protect something: choosing a token scheme, a permission model, where to validate.
 The line is always the same — who makes the decision, not which file gets touched.
 
+**The thing being asked for is not exempt.** The examples above are all side-pieces
+breaking off some larger work, and that framing quietly suggests the main artefact stays
+yours. It does not. `text` exists for documents, and a README, a changelog or a
+translation is usually the deliverable itself. Deciding the structure is your judgement;
+filling it in against a structure you have already decided is a `text` task, however
+important the document is.
+
+Watch for the excuses, because they are always the same five, and each one sounds
+reasonable in the moment:
+
+> *it's the deliverable · it needs judgement · I'm already in the file · specifying it
+> costs as much as writing it · the quality bar is too high*
+
+The first two are almost never true once the outline exists. The third and fourth are
+sometimes true — that is §1, and it is a real limit, not a loophole. The fifth is never
+true: a bar you can state is a bar you can put in the prompt, and a bar you cannot state
+was not a bar.
+
+A usable threshold: **a whole document, or more than about fifty lines written to a
+structure you have already settled, is a `text` task.** Below that, §1 wins and you write
+it yourself. If you notice you are drafting something long and have not asked which
+profile it belongs to, you have already made the mistake.
+
 The most common borderline case is a bug. **Diagnosis and repair separate**: you find the cause, the
 mechanical repair that follows gets delegated. "Login times out sometimes" does not delegate. "In
 `src/auth.ts:42` the error branch is missing its `clearTimeout`, add it and cover the case with a

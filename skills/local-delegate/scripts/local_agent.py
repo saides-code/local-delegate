@@ -683,7 +683,12 @@ def show_changes():
     if not in_git_repo():
         return
     code, untracked = git("ls-files", "--others", "--exclude-standard")
-    new_files = [f for f in untracked.splitlines() if f.strip()]
+    # The skill's own state — sessions.json, verify.ps1, the logs — is not the agent's
+    # work, and listing it pollutes the very diff §10 tells the reviewer to trust.
+    # Taken from WORK_DIR rather than hardcoded, because LOCAL_AGENT_DIR can move it.
+    own = WORK_DIR.as_posix().rstrip("/") + "/"
+    new_files = [f for f in untracked.splitlines()
+                 if f.strip() and not f.startswith(own)]
     for f in new_files:
         git("add", "-N", f)
     print("\n── changes ──")

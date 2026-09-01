@@ -193,6 +193,19 @@ class FlushTest(Base):
         r = self.s.run("flush")
         self.assertIn("src/made.ts", r.stdout)
 
+    def test_the_tool_own_state_does_not_leak_into_the_summary(self):
+        """Files under .local-delegate/ (sessions.json, verify.ps1, logs) are the tool's
+        own state, not the agent's work, and must not pollute the diff a reviewer trusts."""
+        self.s.plan([{"write": {"path": "src/made.ts", "content": "export const x = 1;\n"}}])
+        self.s.run("queue", "code", "create the module")
+        r = self.s.run("flush")
+        self.assertIn("src/made.ts", r.stdout)
+        # Check the new-files section only: everything after the last "── N new file(s)"
+        # header through the end of stdout.  The log path prints ".local-delegate" too,
+        # so the assertion must be scoped to the section we are fixing.
+        section = r.stdout.split("── ")[-1]
+        self.assertNotIn(".local-delegate", section)
+
 
 class VerifyTest(Base):
     def test_a_passing_verification_stops_after_one_attempt(self):
