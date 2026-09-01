@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "local-delegate",
   "displayName": "Local Delegate",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Hand the mechanical parts of a job to a second Claude Code running on local Ollama models, so refactors, tests, translations and first drafts cost no subscription tokens.",
   "author": {
     "name": "saides-code",

@@ -15,9 +15,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ollama_api as oa  # noqa: E402
+import runtime  # noqa: E402
+
+runtime.fix_console()
 import config as cfgmod  # noqa: E402
 
-PROFILES = ("code", "fast", "text", "tiny")
+PROFILES = ("code", "fast", "text", "tiny", "vision")
 NS = 1_000_000_000
 
 PROBE_TOOL = {
@@ -37,6 +40,47 @@ MIN_TOKENS_PER_SEC = 5.0
 MIN_VRAM_FRACTION = 0.6
 
 
+def server_conditions():
+    """The tuning variables as this shell sees them.
+
+    Be honest about what this is. Ollama runs as its own process — a service, a
+    desktop app, sometimes another host — and does not report its configuration over
+    the API, so these are *this shell's* variables and agree with the server only when
+    the server inherited them. They are recorded because a measurement without its
+    conditions cannot be compared later, not because they are authoritative.
+    """
+    return {
+        "source": "client shell environment, not read from the server",
+        "flash_attention": os.environ.get("OLLAMA_FLASH_ATTENTION", "unset here"),
+        "kv_cache_type": os.environ.get("OLLAMA_KV_CACHE_TYPE", "unset here"),
+        "keep_alive": os.environ.get("OLLAMA_KEEP_ALIVE", "unset here"),
+    }
+
+
+def blobs_dir():
+    """Where Ollama keeps model blobs, when it is running on this machine."""
+    if not any(h in oa.BASE for h in ("localhost", "127.0.0.1", "::1")):
+        return None
+    root = os.environ.get("OLLAMA_MODELS")
+    return Path(root) / "blobs" if root else Path.home() / ".ollama" / "models" / "blobs"
+
+
+def pull_in_flight():
+    """True when a download is still writing, which invalidates any measurement.
+
+    Worth a check rather than a footnote: the same model measured during a 22 GB pull
+    read 16.3 tok/s and 67.6 tok/s once the disk was quiet — a factor of four, written
+    into the config identically either way.
+    """
+    d = blobs_dir()
+    if not d or not d.is_dir():
+        return False
+    try:
+        return any("partial" in p.name for p in d.iterdir())
+    except OSError:
+        return False
+
+
 def measure(profile):
     name = f"local-{profile}"
     row = {"profile": profile, "model": name, "issues": []}
@@ -51,7 +95,11 @@ def measure(profile):
 
     row["vram_pct"] = None
     for m in oa.loaded_models():
-        if (m.get("name") or m.get("model")) == name:
+        # The API reports "local-text:latest" while `name` is "local-text", so a
+        # bare comparison never matches and the residency check silently never fires
+        # — which is the one thing step 9 exists to catch on a card that is too small.
+        loaded = (m.get("name") or m.get("model") or "").split(":")[0]
+        if loaded == name.split(":")[0]:
             size, vram = m.get("size", 0), m.get("size_vram", 0)
             if size:
                 row["vram_pct"] = round(vram * 100 / size)
@@ -83,7 +131,8 @@ def record(row):
         cfg = cfgmod.load()
         cfg.setdefault("checks", {})[row["profile"]] = {
             "at": cfgmod.now(), "tps": round(row["tps"], 1),
-            "vram_pct": row["vram_pct"], "tools": row["tools"], "issues": row["issues"]}
+            "vram_pct": row["vram_pct"], "tools": row["tools"], "issues": row["issues"],
+            "conditions": server_conditions()}
         cfgmod.save(cfg)
     except OSError:
         pass
@@ -94,6 +143,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("profiles", nargs="*", metavar="PROFILE",
                     help=f"one or more of: {', '.join(PROFILES)} (default: all)")
+    ap.add_argument("--anyway", action="store_true",
+                    help="measure even while a model download is in flight")
     a = ap.parse_args()
 
     unknown = [p for p in a.profiles if p not in PROFILES]
@@ -110,6 +161,20 @@ def main():
     if not wanted:
         raise SystemExit("No local-* profile found. Run the setup first.")
 
+    if pull_in_flight() and not a.anyway:
+        raise SystemExit(
+            "A model download is still writing to disk. Measuring now reports the\n"
+            "disk contention, not the model: the same profile has read four times\n"
+            "slower under a pull, and the number would be stored as if it were real.\n"
+            "Wait for the pull to finish, or pass --anyway if you know what you are\n"
+            "measuring.")
+
+    cond = server_conditions()
+    print(f"This shell: flash_attention={cond['flash_attention']}, "
+          f"kv_cache={cond['kv_cache_type']}, keep_alive={cond['keep_alive']}")
+    print("  (Ollama does not report its own configuration, so these match the server")
+    print("   only if it inherited this environment. See references/setup.md step 6.)")
+    print()
     print(f"{'PROFILE':<8}{'MODEL':<14}{'LOAD':>7}{'TOK/S':>8}{'IN VRAM':>9}{'TOOLS':>7}  STATUS")
     print("-" * 72)
 
@@ -149,14 +214,7 @@ def main():
     return 1 if issues else 0
 
 
-def _quiet_broken_pipe():
-    """`python x.py | head` closes the pipe early; without this Python prints a
-    traceback that reads like a crash. Exit quietly instead, as CLI tools do."""
-    try:
-        sys.stdout.flush()
-    except BrokenPipeError:
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        sys.exit(0)
+
 
 
 if __name__ == "__main__":
@@ -164,5 +222,5 @@ if __name__ == "__main__":
         code = main()
     except BrokenPipeError:
         code = 0
-    _quiet_broken_pipe()
+    runtime.quiet_broken_pipe()
     sys.exit(code)

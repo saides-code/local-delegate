@@ -1,17 +1,41 @@
 # Guided model setup
 
-Run this the first time, or whenever the user wants to reconsider which models to use. It is a
-conversation in nine steps: the user decides at every fork, you bring the data.
+Run this the first time, or whenever the user wants to reconsider which models to use.
 
-Do not skip steps and do not jump ahead to naming models. **The right list depends on this machine
-and on today** — tags change size, new generations ship, vendor recommendations get revised. Any
-model list you already hold in your head is out of date.
+## Choose the path first, and offer the fast one
 
-All scripts are Python 3, standard library only:
+**This setup runs on the expensive model, and the full version is not cheap**: nine
+interactive steps, a web fetch per candidate, several verification passes. On one
+recorded run it consumed a weekly limit before a single task had been delegated. That
+is the wrong shape for a skill whose entire purpose is to save those tokens, so offer
+the choice before starting:
 
-```bash
-S="<this skill's directory>/scripts"
-```
+- **Fast** — detect the GPU, pick from the shortlist below, install, verify. Two
+  approvals, no research, a few minutes of conversation.
+- **Deep** — the nine steps that follow. Worth it when the hardware is unusual, when
+  the user needs a capability the standard profiles do not cover, or when the shortlist
+  is stale.
+
+Default to fast unless the user asks otherwise or step 1 turns up something the
+shortlist does not cover.
+
+### The fast path
+
+1. `python "$S/check_machine.py"` and confirm the VRAM with the user.
+2. Propose a set from the shortlist in `references/shortlist.md` matching that VRAM
+   tier, saying in one line what each model is for. Get one approval for the whole set.
+3. Install with `make_profile.py`, one call per profile, using the parameters recorded
+   in the shortlist.
+4. `python "$S/selfcheck.py"`, then the ignore rules of step 8, then report.
+
+If the shortlist file is missing or its date is more than a few months old, say so and
+switch to the deep path — a stale shortlist is worse than research, because it looks
+authoritative.
+
+Delegate the reading itself where you can. Comparing model cards is extraction from
+long pages, which is what `text` and `tiny` exist for. If profiles are already
+installed from a previous machine or an earlier run, use them to summarise the pages
+rather than reading every one into this context.
 
 ## 1. Photograph the machine
 
@@ -184,16 +208,43 @@ a better choice — it is the same VRAM spent worse.
   allow that, **say so and propose dropping `tiny`**: a profile that cannot run in parallel is just a
   worse `text`.
 - Recommend the environment variables that widen the margin: `OLLAMA_FLASH_ATTENTION=1`,
-  `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_KEEP_ALIVE=30m`.
+  `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_KEEP_ALIVE=30m`. **Then check they took effect**
+  before measuring: `selfcheck.py` prints the server's actual settings at the top and
+  warns when flash attention is off. Measuring in the configuration this document calls
+  suboptimal, and storing those numbers as if they were the model's best, is how a
+  candidate gets rejected for the wrong reason. The KV cache setting matters most for
+  `code`, where it decides whether a borderline model fits.
 
 ## 7. Propose the list
 
 Present a table: profile, tag, size, chosen context, and **one line on why that model for that job**.
-Add the total download and, on a slow connection, a rough time. Mark the profiles covered by models
-already present, which cost nothing.
+Give the total download in gigabytes. Mark the profiles covered by models already present, which cost
+nothing.
+
+**Do not invent a time.** Nothing here measures the connection, so any figure before the download
+starts is a guess, and it will be wrong in the direction that matters: a "~10 min" estimate against a
+real 13 MB/s was closer to thirty, on one leg of a fifty-minute setup that had been described as a
+few minutes. Say the size, say that the rate is unknown until it starts, and offer to report the real
+rate once it is running.
 
 Wait for approval. If the user swaps a model, redo step 5 for the new one — never recycle another
 model's parameters.
+
+### Watching a download, without being lied to
+
+Once `ollama pull` is running, three of the four obvious progress signals are wrong, and the most
+convincing one is the worst:
+
+| Signal | Verdict |
+|---|---|
+| The captured log | Empty for twenty minutes at a time — the progress bar redraws with carriage returns and is never flushed |
+| The `-partial` blob's size | **Reads as complete from the first second.** Ollama pre-allocates the file at full size, so it agrees with the advertised total while the file is still empty |
+| The `-partial-N` chunk files | Their `Completed` fields stay at 0 with gigabytes already on disk |
+| Allocated blocks over a sampling window | The only honest reading: sample the blocks actually allocated, twice, a few seconds apart, and divide |
+
+The second one produced a confident "92% done" in a real session when the true figure was near 35%.
+If you report progress at all, report it from the fourth, and say over what window you measured.
+Otherwise say plainly that Ollama does not expose progress and let the pull finish.
 
 ## 8. Install, then ask the one deletion question
 
@@ -257,6 +308,11 @@ What to look for in the issues it reports:
 It also prints the tokens processed locally during the check. That is a tiny probe: use it to confirm
 the loop works and to give a sense of scale, and **do not present it to the user as an estimate of
 savings**, which only real tasks can show.
+
+Measurements are stamped with the server settings they were taken under, so a later
+comparison is not misled by numbers from a different configuration. Do not measure
+while a large pull is still running: the same model measured during a download ran four
+times slower than on a quiet disk, and nothing else in the output would tell you.
 
 Then the end-to-end test, in a clean git repository:
 

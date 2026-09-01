@@ -1,19 +1,19 @@
-# The skill's own runtime state, when local-delegate is used inside this repo.
-# Machine-specific: model tags and VRAM measurements do not transfer.
-.local-delegate/config.json
-.local-delegate/*.log
-.local-delegate/queue.jsonl
-.local-delegate/queue.*.done
+# Runtime files the skill writes in the projects it runs in — never in this repo.
+.local-delegate/
 
 # Python
 __pycache__/
-*.py[cod]
-.venv/
-venv/
+*.pyc
+
+# Build output
+*.skill
+
+# Test scratch: fake_claude.py falls back to this name when the harness has not
+# named a state file.
+fake_claude_state
 
 # OS / editor
 .DS_Store
 Thumbs.db
-*.swp
 .idea/
 .vscode/

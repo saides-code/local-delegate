@@ -1,0 +1,55 @@
+name: release
+
+# Tagging cuts the release. The marketplace installs straight from the repository, so
+# the tag is what a `version` in the manifests can be pinned to; the attached bundle is
+# for people who would rather drop the skill into ~/.claude/skills by hand.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Scripts compile
+        run: python -m compileall -q skills/local-delegate/scripts
+
+      - name: Manifests agree with the tag
+        run: python .github/scripts/validate_plugin.py
+
+      - name: Tests
+        run: python -m unittest discover -s tests
+
+      - name: Build the standalone skill bundle
+        run: |
+          # Only what the skill needs at runtime: no CI config, no manifests, nothing
+          # that would clutter the folder once it is dropped into ~/.claude/skills.
+          STAGE=$(mktemp -d)
+          cp -r skills/local-delegate "$STAGE/local-delegate"
+          find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} +
+          (cd "$STAGE" && zip -qr "$GITHUB_WORKSPACE/local-delegate.skill" local-delegate)
+          unzip -l local-delegate.skill
+
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: local-delegate.skill
+          generate_release_notes: true
+
+      - name: Keep it as an artifact on manual runs
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-delegate-skill
+          path: local-delegate.skill

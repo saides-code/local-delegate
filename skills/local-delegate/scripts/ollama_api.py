@@ -49,7 +49,10 @@ def loaded_models():
     return _call("/api/ps").get("models", [])
 
 
-def generate(model, prompt, keep_alive="5m", timeout=300):
+def generate(model, prompt, keep_alive=None, timeout=300):
+    # Default to a long residency: the model that was just loaded is the one the
+    # next task will want, and reloading a large coder costs ~20 s.
+    keep_alive = keep_alive or os.environ.get("LOCAL_AGENT_KEEP_ALIVE", "30m")
     return _call(
         "/api/generate",
         {"model": model, "prompt": prompt, "stream": False, "keep_alive": keep_alive},
