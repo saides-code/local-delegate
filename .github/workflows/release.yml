@@ -27,7 +27,11 @@ jobs:
       - name: Manifests agree with the tag
         run: python .github/scripts/validate_plugin.py
 
+      # Same condition as validate.yml: releases are cut from main, which carries the
+      # skill and not the scaffolding used to develop it. Without the guard this step
+      # fails on the one branch it is meant to run on.
       - name: Tests
+        if: hashFiles('tests/**') != ''
         run: python -m unittest discover -s tests
 
       - name: Build the standalone skill bundle
