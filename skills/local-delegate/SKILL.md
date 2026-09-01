@@ -329,6 +329,18 @@ Split a task with more than three independent steps: tool-calling reliability co
 downward along a loop, so two three-step tasks succeed far more often than one six-step
 task.
 
+**Bound the scope, especially read-only ones.** A `--ro` task is safe, which makes it
+tempting to point at the whole repository and ask a broad question. Do not. Measured on
+one session: *"read `backend/recorder.py` and report the public methods with their exact
+signatures"* returned verbatim-correct output in 39 seconds, while *"audit every tracked
+file for anything that should not ship"* ran for ten and a half minutes and came back
+with an architecture summary and the words "no tasks were assigned yet". Nothing failed
+and nothing warned — it simply explored until it forgot the question.
+
+The rule that separates them is not read-versus-write, it is whether the finish line is
+stated. Name the files, or the exact thing being looked for, and the answer arrives.
+Ask for a survey and you get one, whatever you actually asked.
+
 Project rules load themselves. `AGENTS.md`, `CLAUDE.md` and `.local-delegate/project.md`
 are read from the repository and appended to every delegation, so conventions the
 project cares about reach the local agent without being pasted by hand.
