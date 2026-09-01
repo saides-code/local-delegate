@@ -29,5 +29,9 @@ jobs:
       - name: Manifests, frontmatter and referenced paths
         run: python .github/scripts/validate_plugin.py
 
+      # The suite lives on develop: it needs a fake Ollama and a fake launcher, which
+      # are scaffolding rather than part of the skill anyone installs. Conditional so
+      # one workflow file serves both branches.
       - name: Tests
+        if: hashFiles('tests/**') != ''
         run: python -m unittest discover -s tests -v
