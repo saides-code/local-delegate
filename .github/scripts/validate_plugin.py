@@ -5,6 +5,7 @@ Cheap to run, and it catches the failures that are expensive to discover after a
 release: a renamed skill directory, a version bumped in one manifest and not the
 other, a `source` pointing at a directory that is not there any more.
 """
+import ast
 import json
 import re
 import subprocess
@@ -110,6 +111,37 @@ for doc in sorted((ROOT / "skills").rglob("*.md")):
         if HARDWARE.search(line):
             rel = doc.relative_to(ROOT).as_posix()
             fail(f"{rel}:{n} names specific hardware; check_machine.py detects it instead")
+
+# Anything defined and never referenced. This exists because of a specific defect:
+# GUARDRAILS -- the local agent's entire system prompt, including the ban on calling a
+# library API it has not verified -- was defined and never passed to the child. Runs
+# still succeeded, they just silently took none of the guidance. Nothing failed, so
+# nothing surfaced it.
+scripts = sorted((ROOT / "skills").rglob("scripts/*.py"))
+sources = {p: p.read_text(encoding="utf-8") for p in scripts}
+whole = "\n".join(sources.values())
+
+for path, src in sources.items():
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        fail(f"{path.relative_to(ROOT).as_posix()} does not parse: {e}")
+        continue
+    defined = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_"):
+            defined.append(node.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id.isupper() and not t.id.startswith("_"):
+                    defined.append(t.id)
+    for name in defined:
+        if name in ("main", "GB", "NS"):
+            continue
+        # One occurrence across every script means the definition itself and nothing else.
+        if len(re.findall(rf"\b{re.escape(name)}\b", whole)) < 2:
+            rel = path.relative_to(ROOT).as_posix()
+            fail(f"{rel} defines {name} and nothing ever uses it")
 
 # Runtime state is machine-specific and must never be committed.
 tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True)
