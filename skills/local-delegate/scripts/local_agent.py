@@ -13,6 +13,26 @@ Claude Code itself becomes the local agent, with all its normal tools.
     python local_agent.py ps                               what is loaded now
     python local_agent.py gitignore                        ignore machine-only files
 
+On run and flush:
+    --verify "<cmd>"   the task is finished when this exits 0, not when a file is
+                       written; the agent retries locally until it does
+    --attempts N       how many of those local retries (default 3)
+    --allow-installs   let the agent install dependencies, off by default
+    --baseline <sha>   iterate on uncommitted work already attributable to that commit
+
+On run only:
+    --ro               read-only: analyse, do not edit
+    --fresh            ignore the stored session and start cold
+    --add-dir <path>   an extra directory it may read, but not write
+
+Environment:
+    LOCAL_AGENT_CLAUDE_BIN     the command that starts Claude Code, if discovery fails
+    LOCAL_AGENT_VERIFY_SHELL   `cmd` to run verification in cmd.exe instead of PowerShell
+    LOCAL_AGENT_KEEP_ALIVE     how long a model stays resident (default 30m)
+    LOCAL_AGENT_ALLOW_INSTALLS truthy to allow installs without the flag
+    OLLAMA_URL                 where Ollama answers (default http://localhost:11434)
+
+Exit codes: 0 done, 1 the task ran and failed, 2 refused before anything started.
 Profiles are defined by the setup; see SKILL.md.
 """
 import argparse
