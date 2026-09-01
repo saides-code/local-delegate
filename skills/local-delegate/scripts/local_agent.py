@@ -18,6 +18,7 @@ Profiles are defined by the setup; see SKILL.md.
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -277,6 +278,29 @@ def save_session(profile, session_id):
         pass
 
 
+def forget_session(profile):
+    s = load_sessions()
+    if s.pop(profile, None) is None:
+        return
+    try:
+        SESSIONS.write_text(json.dumps(s, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def looks_like_stale_session(proc):
+    """Whether a failed run failed because the session id no longer resolves.
+
+    Matched on the message rather than an exit code because Claude Code reports this
+    as an ordinary failure. Kept narrow on purpose: retrying a genuine task failure
+    without the session would silently throw away the context the resume existed for.
+    """
+    blob = ((proc.stdout or "") + (proc.stderr or "")).lower()
+    return any(p in blob for p in (
+        "no conversation found", "session not found", "could not find session",
+        "no such session", "invalid session id"))
+
+
 # --- running ----------------------------------------------------------------
 def readonly_outside(add_dirs):
     """Deny rules that make an extra directory readable but not writable.
@@ -360,10 +384,50 @@ def parse_result(stdout):
     return data.get("session_id"), text or stdout
 
 
+def powershell():
+    """The PowerShell to run verification commands in, or None to fall back.
+
+    Windows `shell=True` means cmd.exe, which is not the shell this skill documents.
+    Set LOCAL_AGENT_VERIFY_SHELL=cmd to go back to it — worth knowing about, because
+    Windows PowerShell 5.1 has no `&&`, so a verification command chained that way
+    needs either cmd or a `;`.
+    """
+    if os.name != "nt" or os.environ.get("LOCAL_AGENT_VERIFY_SHELL", "").lower() == "cmd":
+        return None
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+def write_verify_script(command, directory):
+    """Put the command in a .ps1 rather than passing it to -Command.
+
+    A script file sidesteps the second round of quote parsing that -Command applies,
+    which mangles any command carrying quoted paths. Two details matter:
+    `exit $LASTEXITCODE` because PowerShell otherwise reports the *script's* status
+    and a verification step that always passes is worse than none; and the call
+    operator, because a line beginning with a quoted string is a string expression in
+    PowerShell, not a command to run.
+    """
+    body = command.strip()
+    if body[:1] in ('"', "'"):
+        body = "& " + body
+    script = Path(directory) / "verify.ps1"
+    script.write_text(f"{body}\nexit $LASTEXITCODE\n", encoding="utf-8")
+    return script
+
+
 def run_verify(command):
     print(f"  ↻ verifying: {command}")
+    shell = powershell()
     try:
-        p = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=900)
+        if shell:
+            WORK_DIR.mkdir(parents=True, exist_ok=True)
+            script = write_verify_script(command, WORK_DIR)
+            argv, use_shell = [shell, "-NoProfile", "-NonInteractive",
+                               "-ExecutionPolicy", "Bypass", "-File", str(script)], False
+        else:
+            argv, use_shell = command, True
+        p = subprocess.run(argv, shell=use_shell, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=900)
     except (OSError, subprocess.SubprocessError) as e:
         return False, f"could not run the verification command: {e}"
     out = ((p.stdout or "") + (p.stderr or "")).strip()
@@ -427,9 +491,27 @@ def run_one(profile, task, read_only=False, verify=None, attempts=DEFAULT_ATTEMP
         print(f"▶ {profile} → {model} ({mode}{suffix})")
 
         try:
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace")
         except OSError as e:
             raise Refused(f"could not start the local agent: {e}")
+
+        # A stored session id can outlive the session it names — the local config
+        # directory gets cleared, or the transcript is pruned. Without this the profile
+        # is stuck: every run resumes an id that no longer resolves, and the only way
+        # out is a --fresh the caller has no reason to suspect it needs.
+        if resume_id and proc.returncode != 0 and looks_like_stale_session(proc):
+            print(f"  · stored session {resume_id[:8]} no longer resolves — starting fresh",
+                  file=sys.stderr)
+            forget_session(profile)
+            resume_id = None
+            cmd = build_command(claude_cmd, profile, model, prompt, read_only,
+                                None, add_dirs, allow_installs)
+            try:
+                proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace")
+            except OSError as e:
+                raise Refused(f"could not start the local agent: {e}")
 
         sid, text = parse_result(proc.stdout)
         if sid and not read_only:

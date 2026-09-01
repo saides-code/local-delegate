@@ -46,7 +46,8 @@ HOME_DIR = Path.home() / ".local-delegate"
 # config.json is machine-exclusive: the tags it names depend on what is installed on
 # this box and on how much VRAM it has, and the measurements come from this GPU. Only
 # project.md — what to delegate here — is portable and worth committing.
-MACHINE_ONLY = ["config.json", "sessions.json", "*.log", "queue.jsonl", "queue.*.done"]
+MACHINE_ONLY = ["config.json", "sessions.json", "*.log", "queue.jsonl", "queue.*.done",
+                "verify.ps1"]
 
 
 def project_dir():

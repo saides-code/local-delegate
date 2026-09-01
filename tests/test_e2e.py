@@ -212,6 +212,23 @@ class VerifyTest(Base):
         self.assertIn("NOT confirmed", r.stdout + r.stderr)
 
 
+class VerifyShellTest(Base):
+    def test_a_failing_command_is_detected_whatever_the_shell(self):
+        """PowerShell returns 0 for the script unless the native exit code is
+        forwarded, so a verification step could report success on every failure."""
+        self.s.plan([{}, {}, {}])
+        failing = f'"{sys.executable}" -c "raise SystemExit(3)"'
+        r = self.s.run("run", "code", "task", "--verify", failing, "--attempts", "1")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("NOT confirmed", r.stdout + r.stderr)
+
+    def test_a_passing_command_is_detected_whatever_the_shell(self):
+        self.s.plan([{}])
+        passing = f'"{sys.executable}" -c "print(1)"'
+        r = self.s.run("run", "code", "task", "--verify", passing, "--attempts", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 class SessionTest(Base):
     def test_a_second_task_resumes_the_first_ones_session(self):
         """Fifteen cold starts was the measured cost of one-shot invocation."""
@@ -227,6 +244,25 @@ class SessionTest(Base):
         self.s.run("run", "code", "first")
         self.s.run("run", "--fresh", "code", "second")
         self.assertIsNone(self.s.calls()[1].get("resume"))
+
+    def test_a_stale_session_is_dropped_and_the_run_retried(self):
+        """A stored id outlives its session when the local config is cleared.
+
+        Without the fallback the profile is stuck: every run resumes an id that no
+        longer resolves, and the caller has no reason to suspect it needs --fresh.
+        """
+        self.s.plan([
+            {"session_id": "sess-gone"},
+            {"result": "No conversation found with session ID sess-gone", "exit": 1},
+            {"result": "started over", "session_id": "sess-new"},
+        ])
+        self.s.run("run", "code", "first")
+        r = self.s.run("run", "code", "second")
+        calls = self.s.calls()
+        self.assertEqual(len(calls), 3, "the failed resume should be retried")
+        self.assertEqual(calls[1].get("resume"), "sess-gone")
+        self.assertIsNone(calls[2].get("resume"), "the retry must not resume")
+        self.assertEqual(r.returncode, 0)
 
 
 class ProjectRulesTest(Base):

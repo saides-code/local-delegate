@@ -233,6 +233,9 @@ Pick something that actually fails when the work is wrong: `npm test`, `pytest -
 `python -c "import mymodule"`, `npx tsc --noEmit`. A type check alone will not catch a
 function that was invented.
 
+On Windows the command runs in PowerShell, not `cmd.exe`. Windows PowerShell 5.1 has no
+`&&`, so chain with `;` — or set `LOCAL_AGENT_VERIFY_SHELL=cmd` for that run.
+
 ## 5c. What the local agent may do
 
 Inside the working directory it has the authority the operator already granted this
