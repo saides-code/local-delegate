@@ -218,11 +218,33 @@ a better choice — it is the same VRAM spent worse.
 ## 7. Propose the list
 
 Present a table: profile, tag, size, chosen context, and **one line on why that model for that job**.
-Add the total download and, on a slow connection, a rough time. Mark the profiles covered by models
-already present, which cost nothing.
+Give the total download in gigabytes. Mark the profiles covered by models already present, which cost
+nothing.
+
+**Do not invent a time.** Nothing here measures the connection, so any figure before the download
+starts is a guess, and it will be wrong in the direction that matters: a "~10 min" estimate against a
+real 13 MB/s was closer to thirty, on one leg of a fifty-minute setup that had been described as a
+few minutes. Say the size, say that the rate is unknown until it starts, and offer to report the real
+rate once it is running.
 
 Wait for approval. If the user swaps a model, redo step 5 for the new one — never recycle another
 model's parameters.
+
+### Watching a download, without being lied to
+
+Once `ollama pull` is running, three of the four obvious progress signals are wrong, and the most
+convincing one is the worst:
+
+| Signal | Verdict |
+|---|---|
+| The captured log | Empty for twenty minutes at a time — the progress bar redraws with carriage returns and is never flushed |
+| The `-partial` blob's size | **Reads as complete from the first second.** Ollama pre-allocates the file at full size, so it agrees with the advertised total while the file is still empty |
+| The `-partial-N` chunk files | Their `Completed` fields stay at 0 with gigabytes already on disk |
+| Allocated blocks over a sampling window | The only honest reading: sample the blocks actually allocated, twice, a few seconds apart, and divide |
+
+The second one produced a confident "92% done" in a real session when the true figure was near 35%.
+If you report progress at all, report it from the fourth, and say over what window you measured.
+Otherwise say plainly that Ollama does not expose progress and let the pull finish.
 
 ## 8. Install, then ask the one deletion question
 
