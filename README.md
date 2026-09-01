@@ -112,4 +112,5 @@ skills/local-delegate/
 
 ## Licence
 
-MIT.
+**Disclaimer:** This skill was made with the aid of AI and may contain imperfections. It is provided "as is", without warranty; use at your own risk.
+Licensed under the MIT License.
