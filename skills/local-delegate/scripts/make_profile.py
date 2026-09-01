@@ -25,8 +25,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import config as cfgmod  # noqa: E402
+import runtime  # noqa: E402
 
-PROFILES = ("code", "fast", "text", "tiny")
+runtime.fix_console()
+
+# `vision` is here because setup.md tells the operator to propose a fifth profile
+# when a capability the four do not cover comes up. An instruction you cannot execute
+# is worse than no instruction: it pushes the work onto an existing profile, which is
+# exactly the bending the document forbids.
+PROFILES = ("code", "fast", "text", "tiny", "vision")
+
+# E-05: two candidates for one profile have to coexist to be compared. A suffix gives
+# the challenger its own model and its own config slot, so the incumbent keeps serving
+# while the measurement happens.
+def slot(profile, suffix=None):
+    return f"{profile}-{suffix}" if suffix else profile
 
 
 def parse_params(pairs):
@@ -53,6 +66,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("profile", choices=PROFILES)
+    ap.add_argument("--as", dest="suffix", metavar="NAME",
+                    help="build as a challenger (local-code-b) instead of replacing "
+                         "the incumbent, so both can be measured")
     ap.add_argument("tag", help="Ollama tag to pull, e.g. qwen3-coder:30b")
     ap.add_argument("num_ctx", type=int, help="context window to bake in")
     ap.add_argument("params", nargs="*", metavar="key=value",
@@ -75,7 +91,8 @@ def main():
               file=sys.stderr)
 
     modelfile = build(a.profile, a.tag, a.num_ctx, params)
-    name = f"local-{a.profile}"
+    key = slot(a.profile, a.suffix)
+    name = f"local-{key}"
     print(f"── {name} ← {a.tag}")
     print("".join(f"   {l}\n" for l in modelfile.splitlines()))
 
@@ -92,27 +109,20 @@ def main():
 
     try:
         cfg = cfgmod.load()
-        prev = cfg["profiles"].get(a.profile, {})
+        prev = cfg["profiles"].get(key, {})
         if prev.get("model") and prev["model"] != a.tag:
             prev["previous_model"] = prev["model"]
         prev.update({"model": a.tag, "num_ctx": a.num_ctx, "params": dict(params),
                      "reason": a.reason or prev.get("reason", ""), "set_at": cfgmod.now()})
-        cfg["profiles"][a.profile] = prev
+        cfg["profiles"][key] = prev
         cfgmod.save(cfg)
-        print(f"✓ {name} ready (recorded in {cfgmod.CONFIG})")
+        print(f"✓ {name} ready (recorded in {cfgmod.config_path()})")
     except OSError:
         print(f"✓ {name} ready (could not write the config file)")
     return 0
 
 
-def _quiet_broken_pipe():
-    """`python x.py | head` closes the pipe early; without this Python prints a
-    traceback that reads like a crash. Exit quietly instead, as CLI tools do."""
-    try:
-        sys.stdout.flush()
-    except BrokenPipeError:
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        sys.exit(0)
+
 
 
 if __name__ == "__main__":
@@ -120,5 +130,5 @@ if __name__ == "__main__":
         code = main()
     except BrokenPipeError:
         code = 0
-    _quiet_broken_pipe()
+    runtime.quiet_broken_pipe()
     sys.exit(code)

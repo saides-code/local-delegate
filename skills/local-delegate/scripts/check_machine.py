@@ -17,6 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ollama_api as oa  # noqa: E402
+import runtime  # noqa: E402
+
+runtime.fix_console()
 
 GB = 1024 ** 3
 
@@ -186,20 +189,10 @@ def human(i):
     return "\n".join(out)
 
 
-def _quiet_broken_pipe():
-    """`python x.py | head` closes the pipe early; without this Python prints a
-    traceback that reads like a crash. Exit quietly instead, as CLI tools do."""
-    try:
-        sys.stdout.flush()
-    except BrokenPipeError:
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        sys.exit(0)
-
-
 if __name__ == "__main__":
     try:
         data = collect()
         print(json.dumps(data, indent=2) if "--json" in sys.argv else human(data))
     except BrokenPipeError:
         pass
-    _quiet_broken_pipe()
+    runtime.quiet_broken_pipe()

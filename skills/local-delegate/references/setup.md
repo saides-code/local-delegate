@@ -1,17 +1,41 @@
 # Guided model setup
 
-Run this the first time, or whenever the user wants to reconsider which models to use. It is a
-conversation in nine steps: the user decides at every fork, you bring the data.
+Run this the first time, or whenever the user wants to reconsider which models to use.
 
-Do not skip steps and do not jump ahead to naming models. **The right list depends on this machine
-and on today** — tags change size, new generations ship, vendor recommendations get revised. Any
-model list you already hold in your head is out of date.
+## Choose the path first, and offer the fast one
 
-All scripts are Python 3, standard library only:
+**This setup runs on the expensive model, and the full version is not cheap**: nine
+interactive steps, a web fetch per candidate, several verification passes. On one
+recorded run it consumed a weekly limit before a single task had been delegated. That
+is the wrong shape for a skill whose entire purpose is to save those tokens, so offer
+the choice before starting:
 
-```bash
-S="<this skill's directory>/scripts"
-```
+- **Fast** — detect the GPU, pick from the shortlist below, install, verify. Two
+  approvals, no research, a few minutes of conversation.
+- **Deep** — the nine steps that follow. Worth it when the hardware is unusual, when
+  the user needs a capability the standard profiles do not cover, or when the shortlist
+  is stale.
+
+Default to fast unless the user asks otherwise or step 1 turns up something the
+shortlist does not cover.
+
+### The fast path
+
+1. `python "$S/check_machine.py"` and confirm the VRAM with the user.
+2. Propose a set from the shortlist in `references/shortlist.md` matching that VRAM
+   tier, saying in one line what each model is for. Get one approval for the whole set.
+3. Install with `make_profile.py`, one call per profile, using the parameters recorded
+   in the shortlist.
+4. `python "$S/selfcheck.py"`, then the ignore rules of step 8, then report.
+
+If the shortlist file is missing or its date is more than a few months old, say so and
+switch to the deep path — a stale shortlist is worse than research, because it looks
+authoritative.
+
+Delegate the reading itself where you can. Comparing model cards is extraction from
+long pages, which is what `text` and `tiny` exist for. If profiles are already
+installed from a previous machine or an earlier run, use them to summarise the pages
+rather than reading every one into this context.
 
 ## 1. Photograph the machine
 
@@ -184,7 +208,12 @@ a better choice — it is the same VRAM spent worse.
   allow that, **say so and propose dropping `tiny`**: a profile that cannot run in parallel is just a
   worse `text`.
 - Recommend the environment variables that widen the margin: `OLLAMA_FLASH_ATTENTION=1`,
-  `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_KEEP_ALIVE=30m`.
+  `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_KEEP_ALIVE=30m`. **Then check they took effect**
+  before measuring: `selfcheck.py` prints the server's actual settings at the top and
+  warns when flash attention is off. Measuring in the configuration this document calls
+  suboptimal, and storing those numbers as if they were the model's best, is how a
+  candidate gets rejected for the wrong reason. The KV cache setting matters most for
+  `code`, where it decides whether a borderline model fits.
 
 ## 7. Propose the list
 
@@ -257,6 +286,11 @@ What to look for in the issues it reports:
 It also prints the tokens processed locally during the check. That is a tiny probe: use it to confirm
 the loop works and to give a sense of scale, and **do not present it to the user as an estimate of
 savings**, which only real tasks can show.
+
+Measurements are stamped with the server settings they were taken under, so a later
+comparison is not misled by numbers from a different configuration. Do not measure
+while a large pull is still running: the same model measured during a download ran four
+times slower than on a quiet disk, and nothing else in the output would tell you.
 
 Then the end-to-end test, in a clean git repository:
 

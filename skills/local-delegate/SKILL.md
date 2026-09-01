@@ -26,8 +26,12 @@ fit is decided during setup by measuring the actual machine, so nothing here ass
 ## First time on this machine?
 
 If the `local-*` models do not exist yet, or the user wants to reconsider which models to use,
-**read `references/setup.md` and follow it**. It detects the machine, researches suitable models and
-their parameters online, proposes them, installs them, and verifies that they actually work.
+**read `references/setup.md` and follow it**.
+
+It opens with a choice, and the choice matters: the full research pass is expensive and runs on *this*
+model, which is the one the skill exists to spare. Offer the fast path first — detect the GPU, take a
+set from `references/shortlist.md`, install, verify — and keep the nine-step version for unusual
+hardware or a stale shortlist.
 
 Do not improvise a model list from memory. Tags change size, new generations ship, and vendor
 recommendations get revised — that procedure exists because the choice has to be made with today's
@@ -83,15 +87,31 @@ a fixed one: the skill may be installed as a user skill, inside a plugin, or ins
 hardcoded path breaks.
 
 ```bash
+# bash / zsh
 LA="<this skill's directory>/scripts/local_agent.py"
-python "$LA" ps        # quick check that it answers
+python "$LA" ps
+
+# PowerShell
+$LA = "<this skill's directory>\scripts\local_agent.py"
+python $LA ps
 ```
 
-Installed as a plugin, that directory is `${CLAUDE_PLUGIN_ROOT}/skills/local-delegate` — the variable
-is set for you, so prefer it over spelling out an install path that carries a version in it.
+The `$LA` shorthand is used below for brevity; substitute the full path if your shell
+does not do variables the same way.
+
+Installed as a plugin, that directory is `${CLAUDE_PLUGIN_ROOT}/skills/local-delegate` —
+the variable is set for you, and it beats writing out an install path that carries a
+version number in it.
 
 They are Python 3, standard library only — no dependencies, and they run from PowerShell, cmd or any
 shell without needing a POSIX environment.
+
+If the launcher cannot be found, `LOCAL_AGENT_CLAUDE_BIN` names the command that starts
+Claude Code, quoted as you would in a shell — `"C:\path\claude.exe"`, or
+`"node" "C:\path\cli.js"` for an npm install. Prefer a real executable over a `.cmd` or
+`.bat` shim: those run through `cmd.exe`, which truncates every argument at its first
+newline, and the prompt carrying the task and the project rules is very much
+multi-line.
 
 ## 1. Do not burn in preparation the tokens you are saving
 
@@ -176,21 +196,82 @@ nature of the task**, never by which model happens to be loaded.
 
 ## 5. Queue, then flush
 
-Evicting and reloading a model costs tens of seconds. Doing it between one task and the next is pure
-waste, so tasks are not run as they come up: they are queued and executed in a batch, grouped by model.
+Evicting and reloading a model costs tens of seconds. Tasks are queued and executed in
+a batch, grouped by model.
 
 ```bash
-python "$LA" queue code "..."     # enqueue, does not run
-python "$LA" queue text "..."     # enqueue
-python "$LA" list                 # inspect the queue before launching it
-python "$LA" flush                # runs everything: code → fast → text → tiny
+python "$LA" queue code "..." --verify "npm test"
+python "$LA" queue text "..."
+python "$LA" list
+python "$LA" flush
 ```
 
-`flush` goes heaviest to lightest, loading each model exactly once. Coding runs first, while the card
-is entirely its own.
+`flush` goes heaviest to lightest, loading each model once. A model is evicted only
+when the next group needs a different one, and the last one stays resident after the
+flush — the next task is usually for the same profile, and reloading a large coder is
+the dominant cost of delegating at all. `unload` frees the card when you actually want
+it free.
 
-Use `run` instead of `queue` + `flush` only for a genuinely isolated task, when you expect no others
-in the same session.
+Use `run` for a genuinely isolated task.
+
+## 5b. Give it a verification command
+
+`--verify "<command>"` is the single most valuable thing you can add to a delegation.
+It changes the contract: the task is not finished when a file is written, it is
+finished when that command exits 0.
+
+The agent is told to run it and fix what it reports. Then the script runs it too, and
+on failure sends the task back to the local model with the error attached — up to
+three times by default, `--attempts` to change it. All of that costs local tokens,
+which are free.
+
+Without it you receive a draft and pay expensive-model attention to review it. With it
+you receive either verified work or an explicit, loud statement that verification never
+passed. Both are useful; a silent draft is not.
+
+Pick something that actually fails when the work is wrong: `npm test`, `pytest -q`,
+`python -c "import mymodule"`, `npx tsc --noEmit`. A type check alone will not catch a
+function that was invented.
+
+## 5c. What the local agent may do
+
+Inside the working directory it has the authority the operator already granted this
+session: read, write, **and run commands**, with no prompts — nobody is there to answer
+one. That last one is the point. An agent that cannot run `python -c "import x"` cannot
+find out whether the API it just called exists, and inventing plausible APIs is the
+most expensive mistake it can make, because it survives type checks and lint and fails
+only at runtime.
+
+Blocked at every level, regardless of mode: commits, pushes, resets and checkouts,
+package installs, network fetches, `rm`, `sudo`. Claude Code evaluates deny rules
+before any permission mode — deny, then ask, then allow — so these hold.
+
+Two different reasons sit in that list, and they are worth keeping apart. `rm` and the
+git verbs that rewrite the working tree are blocked because they **destroy
+attributability**: the whole safety story is that the tree was clean, so the diff is
+the agent's and `git checkout .` undoes it. An agent that can stash or reset erases the
+work and the evidence together. Push, `sudo` and the network are blocked because they
+**reach outside the tree**.
+
+**Be honest with the user about what this is: a net, not a cage.** Bash rules match by
+command prefix, and Claude Code's file rules explicitly do not reach subprocesses that
+open files themselves. The agent may run `python`, so a determined one walks straight
+past every rule. This stops a confused model from doing something irreversible; only an
+OS-level sandbox stops a malicious one. Do not describe it as a security boundary.
+
+`--allow-installs` is the one deliberate exception, off by default. Without it a task
+that has to add a dependency before its tests can pass fails at the install step, and
+the retry loop spends all three attempts on a failure that was never the model's fault.
+Whether an agent may touch the lockfile is a project decision — turn it on for that
+task, not globally.
+
+`--ro` switches to read-only: reads and read-only shell commands, no edits. Use it for
+every analysis, which is also where delegation pays best.
+
+`--add-dir <path>` lets it read something outside the repo — a library's source under
+`site-packages` is often exactly what settles a question about an API. Writing there is
+denied explicitly, because `--add-dir` on its own follows the current permission mode
+and would otherwise grant edits outside the repository.
 
 ## 6. The rules that protect coding quality
 
@@ -204,17 +285,30 @@ model does what.
    have moved on to the light model, put it back in the `code` queue and do another round. This holds
    especially when the user is the one suggesting it to save time: explain that the light model on a
    refactor produces a diff worth throwing away, and that reloading costs less than redoing.
-3. **Parallel only on `tiny`.** The other profiles run one at a time.
+3. **One model in VRAM at a time.** Two resident models on one card means extra
+   offload for both, which slows the coding model down for no gain.
 
-## 7. Writing the prompt properly
+## 7. Write the prompt long, not short
 
-A local model will not find the right spot in a large repository on its own. Give it **the path, the
-function, the expected behaviour and the command that has to go green**. If a task has more than three
-independent steps, split it: tool-calling reliability compounds downward along the loop, so two
-three-step tasks succeed far more often than one six-step task.
+A local model will not find the right spot in a large repository on its own. Give it
+**the path, the function, the expected behaviour, and the command that has to go green**.
 
-Use `run --ro` (read-only) whenever you need an analysis rather than a change: no writes, no working
-tree to clean up.
+Do not write terse prompts to save tokens — the local model's tokens are free, and a
+vague prompt is paid for later in expensive-model review. Spell out the contract, the
+edge cases, and what must not change. Name the file that already does the same thing
+correctly, if there is one: "copy the exact form used in `backend/reader.py`" prevents
+an invented API far better than any instruction to be careful.
+
+Split a task with more than three independent steps: tool-calling reliability compounds
+downward along a loop, so two three-step tasks succeed far more often than one six-step
+task.
+
+Project rules load themselves. `AGENTS.md`, `CLAUDE.md` and `.local-delegate/project.md`
+are read from the repository and appended to every delegation, so conventions the
+project cares about reach the local agent without being pasted by hand.
+
+Related tasks share a session per profile, so a second task can see what the first one
+built. `--fresh` starts a clean one when the context is no longer relevant.
 
 ## 8. Worked example
 
@@ -247,13 +341,24 @@ single `git checkout .`.
 If the tree is dirty, do not work around the check. Tell the user and offer to commit or stash — the
 decision is theirs, they are their changes.
 
+To iterate on a delegation you already started — which is the normal case, since the
+first pass is rarely right — pass `--baseline <commit>`. The changes are then treated
+as this delegation's own work and remain attributable to that commit, so you can send a
+correction back instead of having to commit code you have just judged defective.
+
+Every refusal exits non-zero. A caller that only checks the status will not read one as
+success.
+
 ## 10. Always verify
 
 A local agent's output is never accepted unseen:
 
-1. Read the whole `git diff`. That is why the tree had to be clean.
+1. Read the whole diff. `flush` prints it including newly created files, which a plain
+   `git diff` would omit — and a new module is the most common shape of a delegated task.
 2. Run the test suite.
-3. Read the agent's closing summary: it states what it could **not** do.
+3. Read the agent's closing summary: it states what it could **not** do, and whether the
+   verification command passed. If it did not, the work is not confirmed, however
+   confident the summary sounds.
 4. If the diff is out of scope or confused, `git checkout .` and do the task yourself. Do not hand-patch
    the work of a model that misunderstood — it costs more than redoing it.
 

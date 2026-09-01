@@ -34,6 +34,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import runtime  # noqa: E402
+
+runtime.fix_console()
+
 PROJECT_DIR = Path(".local-delegate")
 PROJECT_FILE = PROJECT_DIR / "project.md"
 HOME_DIR = Path.home() / ".local-delegate"
@@ -41,7 +46,7 @@ HOME_DIR = Path.home() / ".local-delegate"
 # config.json is machine-exclusive: the tags it names depend on what is installed on
 # this box and on how much VRAM it has, and the measurements come from this GPU. Only
 # project.md — what to delegate here — is portable and worth committing.
-MACHINE_ONLY = ["config.json", "*.log", "queue.jsonl", "queue.*.done"]
+MACHINE_ONLY = ["config.json", "sessions.json", "*.log", "queue.jsonl", "queue.*.done"]
 
 
 def project_dir():
@@ -359,20 +364,10 @@ def main():
             "init-project": cmd_init_project}[a.cmd](a)
 
 
-def _quiet_broken_pipe():
-    """`python x.py | head` closes the pipe early; without this Python prints a
-    traceback that reads like a crash. Exit quietly instead, as CLI tools do."""
-    try:
-        sys.stdout.flush()
-    except BrokenPipeError:
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        sys.exit(0)
-
-
 if __name__ == "__main__":
     try:
         code = main()
     except BrokenPipeError:
         code = 0
-    _quiet_broken_pipe()
+    runtime.quiet_broken_pipe()
     sys.exit(code)

@@ -7,6 +7,7 @@ other, a `source` pointing at a directory that is not there any more.
 """
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,9 +24,15 @@ def load(rel):
     if not p.is_file():
         fail(f"{rel} is missing")
         return None
+    raw = p.read_bytes()
+    # PowerShell's `Set-Content -Encoding utf8` writes a BOM, and json.loads rejects
+    # one outright. Easy to introduce from Windows and invisible in every editor.
+    if raw.startswith(b"\xef\xbb\xbf"):
+        fail(f"{rel} starts with a UTF-8 BOM; write it as UTF-8 without one")
+        return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
+        return json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         fail(f"{rel} is not valid JSON: {e}")
         return None
 
@@ -86,6 +93,29 @@ for skill in skills:
     for ref in re.findall(r"`(references/[\w./-]+|scripts/[\w./-]+)`", text):
         if not (skill.parent / ref).exists():
             fail(f"{rel} references {ref!r}, which does not exist")
+
+# The setup measures the machine, so the instructions must not assume one: a hardcoded
+# GPU or VRAM figure in the procedure sends someone else down a path chosen for
+# hardware they do not have.
+#
+# shortlist.md is exempt by design. It is organised *by* VRAM tier, and its
+# measurements are cited with the card they were taken on -- that attribution is the
+# point, not a leak. Everything else describes what to do, not what you have.
+HARDWARE = re.compile(r"RTX [0-9]{4}|GTX [0-9]{4}|\b(?:8|12|16|24|32) ?GB VRAM")
+EXEMPT = {"shortlist.md"}
+for doc in sorted((ROOT / "skills").rglob("*.md")):
+    if doc.name in EXEMPT:
+        continue
+    for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+        if HARDWARE.search(line):
+            rel = doc.relative_to(ROOT).as_posix()
+            fail(f"{rel}:{n} names specific hardware; check_machine.py detects it instead")
+
+# Runtime state is machine-specific and must never be committed.
+tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True)
+for path in tracked.stdout.splitlines():
+    if re.search(r"(^|/)\.local-delegate/|__pycache__|\.pyc$", path):
+        fail(f"{path} is tracked but is runtime state; see .gitignore")
 
 if errors:
     print("FAILED")
