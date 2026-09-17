@@ -53,12 +53,29 @@ class PermissionTest(Base):
         self.s.run("run", "--ro", "code", "analyse this")
         self.assertEqual(self.s.calls()[0]["permission_mode"], "plan")
 
-    def test_the_api_key_is_stripped_and_ollama_substituted(self):
+    def test_the_api_key_is_stripped_and_nothing_reaches_anthropic(self):
+        """A delegation must never be able to spend the subscription it exists to save."""
         self.s.plan([{}])
         self.s.run("run", "code", "task", ANTHROPIC_API_KEY="sk-should-not-survive")
         env = self.s.calls()[0]["env"]
         self.assertIsNone(env["ANTHROPIC_API_KEY"])
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], self.s.ollama.url)
+        self.assertIn("127.0.0.1", env["ANTHROPIC_BASE_URL"])
+        self.assertNotIn("anthropic.com", env["ANTHROPIC_BASE_URL"])
+
+    def test_by_default_the_child_is_pointed_at_the_thinking_proxy(self):
+        """Not at Ollama directly: thinking has to be disabled on the way through, and
+        it is measured at ~100x on a real task."""
+        self.s.plan([{}])
+        self.s.run("run", "code", "task")
+        base = self.s.calls()[0]["env"]["ANTHROPIC_BASE_URL"]
+        self.assertNotEqual(base, self.s.ollama.url,
+                            "the proxy must sit between the agent and Ollama")
+
+    def test_think_sends_the_child_straight_to_ollama(self):
+        self.s.plan([{}])
+        self.s.run("run", "--think", "code", "task")
+        self.assertEqual(self.s.calls()[0]["env"]["ANTHROPIC_BASE_URL"],
+                         self.s.ollama.url)
 
 
 class GuardrailsTest(Base):

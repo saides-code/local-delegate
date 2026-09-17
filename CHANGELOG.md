@@ -4,6 +4,52 @@ All notable changes to this plugin are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-17
+
+Three field reports from real use of 1.1.0 in another project. One finding dominates:
+delegation was not slow, it was unusable, and the cause was invisible from inside.
+
+### Fixed
+
+- **The local model was thinking instead of working.** Every current model family ships
+  a thinking variant and Ollama leaves thinking on unless told otherwise. Measured on
+  gemma4:12b: one sixty-word answer took 153.5 s with thinking and 1.2 s without, and a
+  real document task streamed 1,091 thinking deltas over seven minutes while writing
+  nothing. Delegations now pass through a loopback proxy that adds
+  `thinking: {"type": "disabled"}`; `--think` opts back in. The same task that timed out
+  at seven minutes now finishes in 1m21s and passes its verification.
+
+  Three obvious fixes do not work, and two fail silently: `think: false` in the body is
+  ignored on `/v1/messages` although it works on `/api/chat`; `MAX_THINKING_TOKENS=0`
+  has no effect; `PARAMETER think false` is not a Modelfile parameter. The first is the
+  trap, because it is the right fix for a one-shot helper and looks right here.
+- **A stalled delegation ran forever and outlived its caller.** There was no timeout at
+  all, and a stalled run held the GPU for over an hour after the session that started it
+  was gone. Attempts now have a ceiling (`--timeout`, default 30 minutes) and are killed
+  with their whole process tree.
+- **A hung run and a slow one looked identical.** A heartbeat now reports elapsed time
+  every thirty seconds, so a stall is visible in the first half minute rather than after
+  twenty-five.
+- **Every attempt paid a three-second stdin tax.** `claude -p` also reads stdin for
+  piped context, so an inherited handle that never delivers anything cost three seconds
+  and a warning per attempt. Stdin is closed explicitly now.
+
+### Added
+
+- **`kill`** stops a delegation that outlived its caller, and **`ps`** now says whether
+  one is running, with its pid and task, instead of only which model Ollama holds.
+- **`drop [n|all]`** removes a queued task or clears the queue, which previously meant
+  editing `queue.jsonl` by hand.
+- **`oa.chat()`**, which reports thinking separately from the answer — the measurement
+  that made the diagnosis possible.
+
+### Known limitations
+
+- **A small probe hides all of this.** "Reply with one word" returns in five seconds with
+  no thinking; models only think when the task is real. `selfcheck` therefore still
+  reports a healthy profile that cannot finish a four-hundred-word task. The probe needs
+  to generate real prose and compare thinking against content.
+
 ## [1.1.0] - 2026-09-01
 
 The first real use of 1.0.0 produced a fault log with eighteen findings. Delegation was
@@ -118,5 +164,6 @@ First release, packaged as an installable Claude Code plugin.
 - Guided setup that measures the machine, researches current models, and verifies them.
 - Scripts, Python 3 standard library only.
 
+[1.2.0]: https://github.com/saides-code/local-delegate/releases/tag/v1.2.0
 [1.1.0]: https://github.com/saides-code/local-delegate/releases/tag/v1.1.0
 [1.0.0]: https://github.com/saides-code/local-delegate/releases/tag/v1.0.0

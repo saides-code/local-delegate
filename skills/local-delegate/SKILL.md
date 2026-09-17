@@ -299,6 +299,34 @@ every analysis, which is also where delegation pays best.
 denied explicitly, because `--add-dir` on its own follows the current permission mode
 and would otherwise grant edits outside the repository.
 
+## 5d. Thinking models, and why delegation looks broken without this
+
+Every current local model family ships a thinking variant, and Ollama leaves thinking
+**on** unless a request says otherwise. On the agent path that is not a slowdown, it is
+a wall. Measured on gemma4:12b: one sixty-word answer took **153.5 s** with thinking and
+**1.2 s** without. A real document task streamed 1,091 thinking deltas over seven minutes
+and wrote nothing at all.
+
+The skill disables it for you — every delegation goes through a loopback proxy that adds
+`thinking: {"type": "disabled"}` to the request. You do not have to configure anything.
+`--think` turns the proxy off for a run where the reasoning is worth its cost.
+
+**Know the three traps, because two of them fail silently.** If you ever debug this:
+
+| Attempt | What happens |
+|---|---|
+| `think: false` in the body | works on `/api/chat`, **silently ignored** on `/v1/messages`, which is the endpoint the agent uses |
+| `MAX_THINKING_TOKENS=0` in the environment | no effect — measured *more* thinking than the baseline |
+| `PARAMETER think false` in a Modelfile | `Error: unknown parameter 'think'` |
+
+The first is the dangerous one: it is the correct fix for a one-shot `/api/chat` helper,
+so it gets copied into the agent path, where it changes nothing and looks like it worked.
+
+**A small probe will not reveal any of this.** "Reply with one word" returns in five
+seconds with no thinking at all; the model only thinks when the task is real. That is why
+`selfcheck` can report a healthy profile that cannot finish a four-hundred-word task, and
+why a stalled delegation is worth measuring rather than guessing at.
+
 ## 6. The rules that protect coding quality
 
 These come before any speed optimisation. Batching exists to recover dead time, not to change which

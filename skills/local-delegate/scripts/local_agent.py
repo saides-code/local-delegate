@@ -20,16 +20,26 @@ On run and flush:
     --allow-installs   let the agent install dependencies, off by default
     --baseline <sha>   iterate on uncommitted work already attributable to that commit
 
+    --think            leave the model's thinking on; off by default, because Ollama
+                       enables it and it is measured ~100x slower for the same answer
+    --timeout N        seconds before one attempt is killed with its process tree
+
 On run only:
     --ro               read-only: analyse, do not edit
     --fresh            ignore the stored session and start cold
     --add-dir <path>   an extra directory it may read, but not write
+
+Other verbs:
+    ps                 what is loaded, and whether a delegation is running
+    kill               stop a delegation that outlived its caller
+    drop [n|all]       remove a queued task, or clear the queue
 
 Environment:
     LOCAL_AGENT_CLAUDE_BIN     the command that starts Claude Code, if discovery fails
     LOCAL_AGENT_VERIFY_SHELL   `cmd` to run verification in cmd.exe instead of PowerShell
     LOCAL_AGENT_KEEP_ALIVE     how long a model stays resident (default 30m)
     LOCAL_AGENT_ALLOW_INSTALLS truthy to allow installs without the flag
+    LOCAL_AGENT_TIMEOUT        seconds before an attempt is killed (default 1800)
     OLLAMA_URL                 where Ollama answers (default http://localhost:11434)
 
 Exit codes: 0 done, 1 the task ran and failed, 2 refused before anything started.
@@ -39,8 +49,11 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -48,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import ollama_api as oa  # noqa: E402
 import config as cfgmod  # noqa: E402
 import runtime  # noqa: E402
+import thinkproxy  # noqa: E402
 
 runtime.fix_console()
 
@@ -58,6 +72,18 @@ ORDER = ("code", "fast", "text", "tiny", "vision")
 WORK_DIR = Path(os.environ.get("LOCAL_AGENT_DIR", ".local-delegate"))
 QUEUE = WORK_DIR / "queue.jsonl"
 SESSIONS = WORK_DIR / "sessions.json"
+RUNNING = WORK_DIR / "running.json"
+
+# A ceiling on one attempt, because there was none and the consequence was measured:
+# a delegation that stalled outlived the session that started it by over an hour,
+# holding the GPU, and had to be found and killed by hand. A local model is slow, not
+# infinitely slow -- anything past this is stuck, and a stuck run that never returns is
+# worse than one that fails.
+DEFAULT_TIMEOUT = int(os.environ.get("LOCAL_AGENT_TIMEOUT", "1800"))
+
+# How often to say the run is still alive. A hung run and a slow one look identical
+# without this, which is what makes people wait twenty-five minutes for nothing.
+HEARTBEAT_SECONDS = 30
 
 # How many times a task may be re-sent to the local model when its verification
 # command fails. Local tokens are free; an expensive-model round trip is not.
@@ -392,6 +418,115 @@ def build_command(claude_cmd, profile, model, task, read_only, resume_id, add_di
     return cmd
 
 
+def kill_tree(pid):
+    """Kill a process and everything it started.
+
+    Killing only the direct child is not enough: the launcher spawns its own children,
+    and those keep the model resident and the work going. Windows has no process groups
+    in the POSIX sense, so taskkill /T walks the tree; elsewhere the child is made a
+    session leader at spawn so one signal reaches the whole group.
+    """
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, text=True)
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(pid), sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        time.sleep(1)
+
+
+def note_running(pid, profile, task):
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        RUNNING.write_text(json.dumps({
+            "pid": pid, "profile": profile, "started": datetime.now().isoformat(timespec="seconds"),
+            "task": task[:200]}, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def clear_running():
+    try:
+        RUNNING.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def read_running():
+    if not RUNNING.exists():
+        return None
+    try:
+        return json.loads(RUNNING.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def pid_alive(pid):
+    if os.name == "nt":
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                           capture_output=True, text=True)
+        return str(pid) in (r.stdout or "")
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def run_child(cmd, env, timeout, profile, task):
+    """Run the local agent with a ceiling, a heartbeat, and a recorded pid.
+
+    Returns (CompletedProcess, timed_out). The pid file is what lets `ps` say a
+    delegation is running and `kill` stop one that outlived its caller.
+    """
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+
+    # Closed stdin, deliberately. `claude -p` also reads stdin for piped context, so an
+    # inherited handle that never delivers anything costs a three-second wait and a
+    # "no stdin data received" warning on every single attempt. The prompt goes in the
+    # command line; there is nothing to pipe.
+    proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace", **kwargs)
+    note_running(proc.pid, profile, task)
+
+    stop = threading.Event()
+
+    def heartbeat():
+        t0 = time.monotonic()
+        while not stop.wait(HEARTBEAT_SECONDS):
+            mins, secs = divmod(int(time.monotonic() - t0), 60)
+            print(f"  · still working, {mins}m{secs:02d}s elapsed "
+                  f"(ceiling {timeout // 60}m)", flush=True)
+
+    threading.Thread(target=heartbeat, daemon=True).start()
+    timed_out = False
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        print(f"  ⚠ no result after {timeout // 60} minutes — stopping it",
+              file=sys.stderr, flush=True)
+        kill_tree(proc.pid)
+        try:
+            out, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+    finally:
+        stop.set()
+        clear_running()
+
+    code = 124 if timed_out else proc.returncode
+    return subprocess.CompletedProcess(cmd, code, out or "", err or ""), timed_out
+
+
 def parse_result(stdout):
     """Claude Code's json output carries the session id and the final text."""
     try:
@@ -456,7 +591,7 @@ def run_verify(command):
 
 def run_one(profile, task, read_only=False, verify=None, attempts=DEFAULT_ATTEMPTS,
             baseline=None, add_dirs=None, fresh=False, allow_installs=False,
-            check_tree=True):
+            check_tree=True, timeout=DEFAULT_TIMEOUT, think=False):
     if not oa.is_up():
         raise Refused(f"Ollama is not answering on {oa.BASE}. Start it, then retry.")
     claude_cmd = runtime.claude_command()
@@ -477,7 +612,7 @@ def run_one(profile, task, read_only=False, verify=None, attempts=DEFAULT_ATTEMP
 
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)
-    env["ANTHROPIC_BASE_URL"] = oa.BASE
+    env["ANTHROPIC_BASE_URL"] = oa.BASE       # replaced below when the proxy is on
     env["ANTHROPIC_AUTH_TOKEN"] = "ollama"
     env["CLAUDE_CONFIG_DIR"] = str(Path.home() / ".claude-local")
     env["PYTHONIOENCODING"] = "utf-8"
@@ -485,6 +620,32 @@ def run_one(profile, task, read_only=False, verify=None, attempts=DEFAULT_ATTEMP
     resume_id = None if (fresh or read_only) else load_sessions().get(profile)
     rules = project_rules()
     transcript = []
+    ok = False
+    detail = ""
+
+    # Thinking is on by default in Ollama and cannot be turned off from the client, so
+    # the requests are rewritten on the way through. thinkproxy.py records what was
+    # tried first and why each one failed. --think keeps the model's own behaviour.
+    proxy = None
+    if think:
+        print("  · thinking left on for this run")
+    else:
+        proxy = thinkproxy.ThinkProxy(oa.BASE, timeout_s=timeout)
+        proxy.__enter__()
+        env["ANTHROPIC_BASE_URL"] = proxy.url
+
+    try:
+        return _run_attempts(profile, task, read_only, verify, attempts, add_dirs,
+                             allow_installs, timeout, model, env, claude_cmd, log,
+                             resume_id, rules, transcript)
+    finally:
+        if proxy:
+            proxy.__exit__(None, None, None)
+
+
+def _run_attempts(profile, task, read_only, verify, attempts, add_dirs, allow_installs,
+                  timeout, model, env, claude_cmd, log, resume_id, rules, transcript):
+    """The attempt loop. Split out only so the proxy has one place to be shut down."""
     ok = False
     detail = ""
 
@@ -511,8 +672,7 @@ def run_one(profile, task, read_only=False, verify=None, attempts=DEFAULT_ATTEMP
         print(f"▶ {profile} → {model} ({mode}{suffix})")
 
         try:
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace")
+            proc, timed_out = run_child(cmd, env, timeout, profile, task)
         except OSError as e:
             raise Refused(f"could not start the local agent: {e}")
 
@@ -528,10 +688,19 @@ def run_one(profile, task, read_only=False, verify=None, attempts=DEFAULT_ATTEMP
             cmd = build_command(claude_cmd, profile, model, prompt, read_only,
                                 None, add_dirs, allow_installs)
             try:
-                proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                      encoding="utf-8", errors="replace")
+                proc, timed_out = run_child(cmd, env, timeout, profile, task)
             except OSError as e:
                 raise Refused(f"could not start the local agent: {e}")
+
+        if timed_out:
+            # Nothing useful came back and the tree is dead. Retrying the identical
+            # prompt would stall the same way, so stop rather than burn the attempts.
+            detail = (f"the local agent produced no result within "
+                      f"{timeout // 60} minutes and was stopped")
+            print(f"  ✗ {detail}", file=sys.stderr)
+            transcript.append(detail)
+            ok = False
+            break
 
         sid, text = parse_result(proc.stdout)
         if sid and not read_only:
@@ -587,20 +756,59 @@ def read_queue():
     return items
 
 
-def show_queue():
+def ordered_queue():
+    """The queue in the order a flush would run it: grouped by profile, heaviest first.
+
+    `list` and `drop` must agree on what "number 2" means, so both go through here
+    rather than each imposing its own order on the file.
+    """
     items = read_queue()
+    return [it for p in ORDER for it in items if it["profile"] == p]
+
+
+def show_queue():
+    items = ordered_queue()
     if not items:
         print("queue is empty")
         return 0
-    for p in ORDER:
-        for it in items:
-            if it["profile"] == p:
-                v = f"   [verify: {it['verify']}]" if it.get("verify") else ""
-                print(f"  [{p}] {it['task']}{v}")
+    for n, it in enumerate(items, 1):
+        v = f"   [verify: {it['verify']}]" if it.get("verify") else ""
+        print(f"  {n}. [{it['profile']}] {it['task']}{v}")
     return 0
 
 
-def flush(attempts=DEFAULT_ATTEMPTS, baseline=None, allow_installs=False):
+def drop_queued(which):
+    """Remove one queued task, or all of them.
+
+    A failed flush leaves its tasks in the queue on purpose, so they can be retried --
+    but retrying is not always what you want, and without this the only way to change
+    your mind is to edit queue.jsonl by hand.
+    """
+    items = ordered_queue()
+    if not items:
+        print("queue is empty, nothing to drop")
+        return 0
+    if str(which).lower() == "all":
+        QUEUE.unlink(missing_ok=True)
+        print(f"dropped all {len(items)} queued task(s)")
+        return 0
+    try:
+        n = int(which)
+    except ValueError:
+        raise Refused(f"expected a number from `list`, or 'all' — got {which!r}")
+    if not 1 <= n <= len(items):
+        raise Refused(f"there is no task {n}; the queue has {len(items)}")
+    gone = items.pop(n - 1)
+    if items:
+        write_rows(QUEUE, items)
+    else:
+        QUEUE.unlink(missing_ok=True)
+    print(f"dropped {n}. [{gone['profile']}] {gone['task'][:80]}")
+    return 0
+
+
+def flush(attempts=DEFAULT_ATTEMPTS, baseline=None, allow_installs=False,
+          timeout=DEFAULT_TIMEOUT, think=False):
     items = read_queue()
     if not items:
         print("queue is empty, nothing to do")
@@ -631,7 +839,7 @@ def flush(attempts=DEFAULT_ATTEMPTS, baseline=None, allow_installs=False):
             try:
                 if run_one(p, it["task"], verify=it.get("verify"), attempts=attempts,
                            baseline=baseline, allow_installs=allow_installs,
-                           check_tree=False) != 0:
+                           check_tree=False, timeout=timeout, think=think) != 0:
                     failures += 1
                 ran.append(it)
             except Refused as e:
@@ -715,6 +923,12 @@ def main():
         p.add_argument("--allow-installs", action="store_true", dest="allow_installs",
                        help="let the agent install dependencies, so a task that adds "
                             "one can still make its verification command pass")
+        p.add_argument("--think", action="store_true",
+                       help="leave the model's own thinking on; off by default because "
+                            "it is measured at 100x slower for the same answer")
+        p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, metavar="SECONDS",
+                       help=f"ceiling on one attempt before the process tree is killed "
+                            f"(default {DEFAULT_TIMEOUT})")
 
     r = sub.add_parser("run", help="run one task now")
     r.add_argument("--ro", action="store_true", help="read-only: analyse, do not edit")
@@ -742,7 +956,11 @@ def main():
     w = sub.add_parser("warm", help="preload a model")
     w.add_argument("profile", choices=ORDER)
     sub.add_parser("unload", help="evict everything from VRAM")
-    sub.add_parser("ps", help="what is loaded right now")
+    sub.add_parser("ps", help="what is loaded, and whether a delegation is running")
+    sub.add_parser("kill", help="stop a running delegation and its process tree")
+    dq = sub.add_parser("drop", help="remove a queued task, or clear the queue")
+    dq.add_argument("which", nargs="?", default="all",
+                    help="1-based position from `list`, or 'all' (default)")
     sub.add_parser("gitignore", help="add the machine-only paths to .gitignore")
 
     a = ap.parse_args()
@@ -751,13 +969,17 @@ def main():
         return run_one(a.profile, a.task, read_only=a.ro, verify=a.verify,
                        attempts=a.attempts, baseline=a.baseline,
                        add_dirs=a.add_dir, fresh=a.fresh,
-                       allow_installs=a.allow_installs or ALLOW_INSTALLS)
+                       allow_installs=a.allow_installs or ALLOW_INSTALLS,
+                       timeout=a.timeout, think=a.think)
     if a.cmd == "queue":
         return enqueue(a.profile, a.task, a.verify)
     if a.cmd == "flush":
-        return flush(a.attempts, a.baseline, a.allow_installs or ALLOW_INSTALLS)
+        return flush(a.attempts, a.baseline, a.allow_installs or ALLOW_INSTALLS,
+                     a.timeout, a.think)
     if a.cmd == "list":
         return show_queue()
+    if a.cmd == "drop":
+        return drop_queued(a.which)
     if a.cmd == "warm":
         name = require_model(a.profile)
         print(f"  ↑ preloading {name}")
@@ -769,8 +991,34 @@ def main():
         return 0
     if a.cmd == "ps":
         loaded = oa.loaded_models()
-        print("\n".join((m.get("name") or m.get("model")) for m in loaded)
-              or "(nothing loaded)")
+        print("in VRAM: " + (", ".join((m.get("name") or m.get("model"))
+                                       for m in loaded) or "(nothing loaded)"))
+        # Which model Ollama holds says nothing about whether a delegation is running;
+        # a stalled one that outlived its caller looks exactly like an idle machine.
+        r = read_running()
+        if not r:
+            print("delegation: none running")
+        elif pid_alive(r["pid"]):
+            print(f"delegation: {r['profile']} running since {r['started']} "
+                  f"(pid {r['pid']}) — `kill` stops it")
+            print(f"  task: {r['task'][:100]}")
+        else:
+            print(f"delegation: stale record for pid {r['pid']}, process is gone")
+            clear_running()
+        return 0
+
+    if a.cmd == "kill":
+        r = read_running()
+        if not r:
+            print("no delegation recorded as running")
+            return 0
+        if not pid_alive(r["pid"]):
+            print(f"pid {r['pid']} is already gone; clearing the record")
+            clear_running()
+            return 0
+        print(f"stopping {r['profile']} (pid {r['pid']}) and everything it started")
+        kill_tree(r["pid"])
+        clear_running()
         return 0
     if a.cmd == "gitignore":
         return write_gitignore()
