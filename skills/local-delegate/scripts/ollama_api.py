@@ -49,6 +49,22 @@ def loaded_models():
     return _call("/api/ps").get("models", [])
 
 
+def chat(model, prompt, think=None, keep_alive=None, timeout=900):
+    """One chat turn, with thinking reported separately from the answer.
+
+    generate() folds everything into one string; /api/chat keeps `thinking` in its own
+    field, which is the only way to see a model spending its whole budget before it
+    says anything. `think` is sent only when given, so the default measures what the
+    model does when nobody tells it otherwise.
+    """
+    keep_alive = keep_alive or os.environ.get("LOCAL_AGENT_KEEP_ALIVE", "30m")
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}],
+            "stream": False, "keep_alive": keep_alive}
+    if think is not None:
+        body["think"] = think
+    return _call("/api/chat", body, timeout=timeout)
+
+
 def generate(model, prompt, keep_alive=None, timeout=300):
     # Default to a long residency: the model that was just loaded is the one the
     # next task will want, and reloading a large coder costs ~20 s.
